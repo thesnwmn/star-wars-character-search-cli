@@ -1,8 +1,11 @@
 import chalk from 'chalk';
 import { log } from './utils'
-import { prompt, abortPrompt, PromptResult } from './prompt';
 import { EventEmitter } from 'stream';
 import { io, Socket } from 'socket.io-client'
+import readline from 'readline'
+
+const ADDRESS = 'http://localhost:3000'
+const PROMPT = chalk.blue('Who are you looking for? ')
 
 enum State {
     STARTING,
@@ -28,8 +31,14 @@ function formatSearchResult(payload: Payload) : string {
 export class App {
 
     private emitter: EventEmitter = new EventEmitter();
-    private socket: Socket = io('http://localhost:3000')
+    private socket: Socket = io(ADDRESS)
     private state: State = State.STARTING
+    
+    private readlineInterface : readline.Interface = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    })
+    private inputAbortController : AbortController = null
 
     constructor(haltCallback: (reason: string) => void) {
 
@@ -49,8 +58,9 @@ export class App {
     public stop() {
         this.state = State.STOPPED
         this.emitter.removeAllListeners()
-        abortPrompt()
+        this.abortInput()
         this.socket.disconnect()
+        this.readlineInterface.close()
     }
 
     /**
@@ -85,7 +95,7 @@ export class App {
      * Internal callback for 'disconnect' socket event
      */
     private onDisconnect() {
-        abortPrompt()
+        this.abortInput()
         log.info('Disconnected')
         this.awaitConnect()
     }
@@ -137,15 +147,20 @@ export class App {
     private getInput() : void {
         if (this.halted()) return
         this.state = State.WAITING_USER_INPUT
-        prompt()
-            .then((result: PromptResult) => {
-                if (this.state === State.WAITING_USER_INPUT) {
-                    result.aborted ? this.awaitConnect() : this.runSearch(result.input)
-                }
-            })
-            .catch((e: Error) => {
-                this.raiseError(`Failed to read input: ${e.message}`)
-            })
+        this.inputAbortController = new AbortController()
+        this.readlineInterface.question(PROMPT, { signal: this.inputAbortController.signal }, (input) => {
+            this.inputAbortController = null
+            this.runSearch(input)
+        })
+    }
+
+    /**
+     * Abort the input prompt
+     */
+    private abortInput() {
+        if (this.inputAbortController !== null) {
+            this.inputAbortController.abort()
+        }
     }
 
     /**
